@@ -1,11 +1,10 @@
-//! Pure, network-free event handling: (event_name, parsed_json) → decode →
-//! sanity → sink. Kept separate from the Processor so it is unit-testable
+//! Pure, network-free event handling: (event_name, BCS contents) → decode →
+//! sanity → sink. Kept separate from the ingestion loop so it is unit-testable
 //! without constructing a CheckpointEnvelope.
 
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Result};
-use serde_json::Value;
 
 use pricing::invariants::check_svi_arb_free;
 use types::events::{OraclePricesUpdated, OracleSviUpdated};
@@ -14,31 +13,31 @@ use crate::sink::{DecodedEvent, SanityStatus, Sink};
 
 /// Tracks last-seen forward PER oracle (an SVI must be checked against its own
 /// oracle's forward — the protocol runs many oracles concurrently) plus event
-/// liveness.
+/// liveness. Keyed by the raw 32-byte object ID (no allocation / hex churn).
 #[derive(Default)]
 pub struct PipelineState {
-    pub forward_1e9_by_oracle: HashMap<String, u64>,
+    pub forward_1e9_by_oracle: HashMap<[u8; 32], u64>,
     pub oracle_events_seen: u64,
     pub first_checkpoint: Option<u64>,
     pub liveness_warned: bool,
 }
 
-/// Handle one oracle event by its Move struct name. Returns Err on DECODE
-/// failure (loud — schema drift). Sanity failures are NOT errors: they are
-/// tagged on the emitted event.
+/// Handle one oracle event by its Move struct name, decoding from the raw BCS
+/// `event.contents`. Returns Err on DECODE failure (loud — schema drift).
+/// Sanity failures are NOT errors: they are tagged on the emitted event.
 pub fn handle_event(
     checkpoint_seq: u64,
     struct_name: &str,
-    parsed_json: &Value,
+    contents: &[u8],
     state: &mut PipelineState,
     sink: &dyn Sink,
 ) -> Result<()> {
     match struct_name {
         "OracleSVIUpdated" => {
-            let ev: OracleSviUpdated = serde_json::from_value(parsed_json.clone())
+            let ev = OracleSviUpdated::from_bcs(contents)
                 .map_err(|e| anyhow!("decode OracleSVIUpdated: {e}"))?;
             state.oracle_events_seen += 1;
-            let status = match state.forward_1e9_by_oracle.get(&ev.oracle_id) {
+            let status = match state.forward_1e9_by_oracle.get(&ev.oracle_id.0) {
                 Some(&fwd) => SanityStatus::Checked(check_svi_arb_free(&ev.to_svi(), fwd)),
                 // No forward seen yet for THIS oracle → cannot run the curve check.
                 // Report Untested (NOT clean) rather than borrow another oracle's forward.
@@ -48,12 +47,12 @@ pub fn handle_event(
             Ok(())
         }
         "OraclePricesUpdated" => {
-            let ev: OraclePricesUpdated = serde_json::from_value(parsed_json.clone())
+            let ev = OraclePricesUpdated::from_bcs(contents)
                 .map_err(|e| anyhow!("decode OraclePricesUpdated: {e}"))?;
             state.oracle_events_seen += 1;
             state
                 .forward_1e9_by_oracle
-                .insert(ev.oracle_id.clone(), ev.forward);
+                .insert(ev.oracle_id.0, ev.forward);
             sink.emit(checkpoint_seq, &DecodedEvent::Prices(ev));
             Ok(())
         }
@@ -84,6 +83,7 @@ mod tests {
     use super::*;
     use crate::sink::{DecodedEvent, SanityStatus};
     use std::cell::RefCell;
+    use types::events::{I64Raw, ObjId, OraclePricesUpdated, OracleSviUpdated};
 
     struct CaptureSink(RefCell<Vec<String>>);
     impl Sink for CaptureSink {
@@ -99,46 +99,49 @@ mod tests {
         }
     }
 
-    fn svi_json(oracle_id: &str) -> Value {
-        serde_json::json!({
-            "oracle_id": oracle_id,
-            "a": "5274", "b": "638806",
-            "rho": { "magnitude": "458555014", "is_negative": true },
-            "m":   { "magnitude": "1380256",   "is_negative": true },
-            "sigma": "1181366"
-        })
+    // The single clean BTC-like oracle sample from the architecture doc.
+    fn svi_bytes(oracle: [u8; 32]) -> Vec<u8> {
+        let ev = OracleSviUpdated {
+            oracle_id: ObjId(oracle),
+            a: 5274,
+            b: 638_806,
+            rho: I64Raw { magnitude: 458_555_014, is_negative: true },
+            m: I64Raw { magnitude: 1_380_256, is_negative: true },
+            sigma: 1_181_366,
+            timestamp: 1,
+        };
+        bcs::to_bytes(&ev).unwrap()
     }
 
-    fn prices_json(oracle_id: &str, forward: &str) -> Value {
-        serde_json::json!({ "oracle_id": oracle_id, "spot": forward, "forward": forward })
+    fn prices_bytes(oracle: [u8; 32], forward: u64) -> Vec<u8> {
+        let ev = OraclePricesUpdated { oracle_id: ObjId(oracle), spot: forward, forward, timestamp: 1 };
+        bcs::to_bytes(&ev).unwrap()
     }
 
     #[test]
     fn prices_then_svi_runs_sanity_clean() {
         let sink = CaptureSink(RefCell::new(vec![]));
         let mut st = PipelineState::default();
-        handle_event(1, "OraclePricesUpdated",
-            &prices_json("0xA", "73744082479138"), &mut st, &sink).unwrap();
-        handle_event(1, "OracleSVIUpdated", &svi_json("0xA"), &mut st, &sink).unwrap();
+        let a = [0xAA; 32];
+        handle_event(1, "OraclePricesUpdated", &prices_bytes(a, 73_744_082_479_138), &mut st, &sink).unwrap();
+        handle_event(1, "OracleSVIUpdated", &svi_bytes(a), &mut st, &sink).unwrap();
         assert_eq!(*sink.0.borrow(), vec!["prices", "svi:true"]);
         assert_eq!(st.oracle_events_seen, 2);
     }
 
     // Regression for the global-forward bug: an SVI for oracle B must NOT be
     // sanity-checked against oracle A's forward. With B having no forward yet,
-    // the gate must emit clean-untested, never borrow A's forward (which here
-    // would be a wildly mismatched price → spurious Dirty/garbage verdict).
+    // the gate must emit Untested, never borrow A's forward.
     #[test]
     fn svi_does_not_borrow_another_oracles_forward() {
         let sink = CaptureSink(RefCell::new(vec![]));
         let mut st = PipelineState::default();
-        // Oracle A reports a forward 100x off from B's strikes.
-        handle_event(1, "OraclePricesUpdated",
-            &prices_json("0xA", "737440824791380"), &mut st, &sink).unwrap();
+        let a = [0xAA; 32];
+        let b = [0xBB; 32];
+        // Oracle A reports a forward 10x off from B's strikes.
+        handle_event(1, "OraclePricesUpdated", &prices_bytes(a, 737_440_824_791_380), &mut st, &sink).unwrap();
         // Oracle B's SVI arrives before B's own prices.
-        handle_event(1, "OracleSVIUpdated", &svi_json("0xB"), &mut st, &sink).unwrap();
-        // B's SVI must be reported Untested (no forward for B), NOT checked vs A
-        // and NOT silently "clean".
+        handle_event(1, "OracleSVIUpdated", &svi_bytes(b), &mut st, &sink).unwrap();
         assert_eq!(*sink.0.borrow(), vec!["prices", "svi:untested"]);
     }
 
@@ -146,11 +149,11 @@ mod tests {
     fn malformed_svi_is_loud_error() {
         let sink = CaptureSink(RefCell::new(vec![]));
         let mut st = PipelineState::default();
-        // rho missing is_negative → decode must Err, not silently produce garbage.
-        let bad = serde_json::json!({
-            "a": "1", "b": "1", "rho": { "magnitude": "1" }, "m": { "magnitude": "1", "is_negative": false }, "sigma": "1"
-        });
-        let r = handle_event(1, "OracleSVIUpdated", &bad, &mut st, &sink);
+        // Truncated BCS (too few bytes for the declared struct) → decode must
+        // Err, not silently produce garbage.
+        let bad = svi_bytes([0xCC; 32]);
+        let truncated = &bad[..bad.len() - 1];
+        let r = handle_event(1, "OracleSVIUpdated", truncated, &mut st, &sink);
         assert!(r.is_err(), "malformed event must error loudly");
         assert!(sink.0.borrow().is_empty(), "nothing emitted on decode failure");
     }
@@ -159,7 +162,7 @@ mod tests {
     fn unknown_struct_ignored() {
         let sink = CaptureSink(RefCell::new(vec![]));
         let mut st = PipelineState::default();
-        handle_event(1, "OracleSettled", &serde_json::json!({}), &mut st, &sink).unwrap();
+        handle_event(1, "OracleSettled", &[], &mut st, &sink).unwrap();
         assert!(sink.0.borrow().is_empty());
     }
 
