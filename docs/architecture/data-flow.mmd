@@ -1,0 +1,50 @@
+%% Sui Transparency Hub — end-to-end data flow
+%% Verified against testnet package 0xf5ea2b...5138 (2026-05-30, see specs Appendix B)
+sequenceDiagram
+    autonumber
+    participant Sui as Sui Testnet (gRPC)
+    participant IDX as Indexer
+    participant PG as Postgres
+    participant ENG as Engine (+pricing)
+    participant RDS as Redis
+    participant API as API (REST/WS)
+    participant WEB as Frontend
+    participant WAL as Walrus
+
+    Note over Sui,IDX: A. Live surface path (event-driven)
+    Sui->>IDX: oracle::OracleSVIUpdated {a,b,rho(i64),m(i64),sigma, ts}
+    Sui->>IDX: oracle::OraclePricesUpdated {spot, forward, ts}
+    IDX->>IDX: decode i64 sign-magnitude; scale 1e9
+    IDX->>PG: insert events_oracle_svi / events_oracle_prices (idempotent)
+    PG-->>ENG: NOTIFY new svi/prices
+    ENG->>ENG: pricing/: w(k)=a+b(rho(k-m)+sqrt((k-m)^2+sigma^2)), k=ln(K/F)
+    ENG->>ENG: IV=sqrt(w/T); digital no-arb: up_price(K) monotone-decreasing, in [0,1]
+    ENG->>RDS: SET surface:btc:latest {iv_grid, arb_flags}
+    API-->>WEB: WS surface.btc.updated
+    WEB->>API: GET /v1/surface/btc?expiry=1h
+    API->>RDS: read cache
+
+    Note over Sui,ENG: B. PLP risk path (object-state polling — NO plp events)
+    loop every checkpoint (or N)
+        IDX->>Sui: sui_getObject(Predict) showContent
+        Sui-->>IDX: vault{balance,total_mtm,total_max_payout}, withdrawal_limiter{...,enabled}, oracle_matrices(19), settled_oracles(3059)
+        IDX->>PG: insert state_vault / state_strike_matrix (per checkpoint)
+    end
+    Sui->>IDX: predict::Supplied/Withdrawn {amount(6dec), shares}
+    Sui->>IDX: predict::PositionMinted/Redeemed {strike(1e9), is_up, quantity}
+    IDX->>PG: events_plp_flow / events_trade
+    WEB->>API: GET /v1/plp/state
+    API->>ENG: build PLPSnapshot
+    ENG->>ENG: utilization=total_max_payout/balance; bucket=available/capacity iff enabled
+    ENG-->>API: PLPSnapshot
+
+    Note over WEB,WAL: C. Attestation path (Karthik "Generate Risk Report")
+    WEB->>API: POST /v1/attest/plp {sigma?}
+    API->>ENG: PLPSnapshot (+StressResult)
+    ENG->>ENG: canonicalize JSON (sorted keys, fixed precision) -> SHA256
+    ENG->>WAL: PUT bytes
+    WAL-->>ENG: blob_id
+    ENG->>PG: insert attestations {blob_id, sha256, walrus_uri, on_chain_tx?}
+    Note right of ENG: v1: PTB attestation::register(blob_id, sha256, ts, kind)
+    API-->>WEB: {walrus_uri, sha256, on_chain_tx?}
+    WEB->>WAL: re-fetch blob -> recompute SHA256 -> verify == / !=

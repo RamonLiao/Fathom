@@ -1,0 +1,31 @@
+{
+  "_comment": "Golden-vector fixture for DeepBook Predict binary digital option pricing. Captured live from testnet via devInspectTransactionBlock. Pin the off-chain pricing/IV-surface math against these BEFORE writing the indexer. All prices scaled 1e9; strikes/spot/forward scaled 1e9; SVI a/b/sigma scaled 1e9, rho/m are i64 sign-magnitude scaled 1e9.",
+  "source": {
+    "network": "testnet",
+    "package": "0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138",
+    "oracle_id": "0x1b4856b1653488f50c9cbd4a985c2418c0829e4fdc06bacff637067bf1aa47c9",
+    "underlying": "BTC",
+    "captured_clock_ms": 1780153080765,
+    "method": "devInspectTransactionBlock (oracle::binary_price_pair, oracle::compute_price)"
+  },
+  "oracle_state": {
+    "expiry_ms": 1780159500000,
+    "active": true,
+    "settlement_price": null,
+    "prices": { "spot": "73833860834311", "forward": "73832221777447" },
+    "svi": { "a": "7116", "b": "193619", "rho": "-940000000", "m": "-457398", "sigma": "1000000", "_note": "rho,m stored as i64{magnitude,is_negative}; shown signed here" }
+  },
+  "invariants": [
+    "for every K: up + down == 1000000000 (binary digital no-arb parity)",
+    "compute_price(K) == up leg of binary_price_pair(K)",
+    "up(K) strictly non-increasing in K, clamped to [0, 1000000000]",
+    "T is derived from oracle stored timestamp (expiry - prices.timestamp), NOT clock-now; Clock arg is a staleness guard only -> fixture is reproducible from oracle_state alone"
+  ],
+  "vectors": [
+    { "strike": "72000000000000", "up": "1000000000", "down": "0",          "compute_price": "1000000000" },
+    { "strike": "73000000000000", "up": "999651968",  "down": "348032",     "compute_price": "999651968"  },
+    { "strike": "73832000000000", "up": "548806700",  "down": "451193300",  "compute_price": "548806700"  },
+    { "strike": "74000000000000", "up": "229140483",  "down": "770859517",  "compute_price": "229140483"  },
+    { "strike": "75000000000000", "up": "0",          "down": "1000000000", "compute_price": "0"          }
+  ]
+}

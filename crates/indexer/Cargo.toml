@@ -1,0 +1,16 @@
+[package]
+name = "indexer"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+types = { path = "../types" }
+pricing = { path = "../pricing" }
+serde_json = "1"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+# Pinned in Task 8 (live wiring). Kept out of the testable core so Tasks 6-7 build offline.
+# sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", branch = "mainline" }

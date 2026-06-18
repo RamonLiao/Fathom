@@ -1,0 +1,11 @@
+# Rust build artifacts
+/target
+
+# CLAUDE-related (kept out of git per project rule)
+.claude/
+CLAUDE.md
+tasks/progress.md
+tasks/lessons.md
+
+# OS
+.DS_Store

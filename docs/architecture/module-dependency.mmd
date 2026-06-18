@@ -1,0 +1,16 @@
+graph TD
+  Sui["Sui Testnet gRPC<br/>events + Predict object state"] -->|"oracle/predict events"| Indexer
+  Sui -->|"poll Predict object<br/>per checkpoint"| Indexer
+  PredictServer["predict-server backfill<br/>/config /oracles"] --> Indexer
+  Indexer --> PG[(Postgres)]
+  PG --> Engine
+  Pyth["Pyth Feed (v1, cross-check only)"] -. optional .-> Engine
+  Engine --> Pricing["pricing/ SVI + digital no-arb + Greeks"]
+  Engine --> Redis[(Redis cache)]
+  Engine --> Attestation
+  Attestation --> Walrus[(Walrus)]
+  Attestation -. v1 .-> MoveReg["attestation::Registry (Move, v1)"]
+  Redis --> API
+  PG --> API
+  API --> Web[Next.js Frontend]
+  API --> Consumers[Institutional API consumers]
