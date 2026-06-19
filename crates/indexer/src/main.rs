@@ -55,7 +55,7 @@ async fn main() -> Result<()> {
         start,
         tip,
         %REMOTE_STORE_URL,
-        "starting oracle event indexer from network tip"
+        "starting oracle event indexer (backfilling from tip - START_BACKFILL_CHECKPOINTS)"
     );
 
     // Drives checkpoint fetching as background tasks.
@@ -90,7 +90,11 @@ async fn fetch_network_tip() -> Result<u64> {
         "method": "sui_getLatestCheckpointSequenceNumber",
         "params": [],
     });
-    let resp: serde_json::Value = reqwest::Client::new()
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("build http client")?;
+    let resp: serde_json::Value = client
         .post(FULLNODE_URL)
         .json(&body)
         .send()
@@ -102,10 +106,14 @@ async fn fetch_network_tip() -> Result<u64> {
         .await
         .context("parse JSON-RPC response")?;
 
-    let seq = resp
-        .get("result")
-        .and_then(|r| r.as_str())
-        .context("missing/non-string `result` in JSON-RPC response")?;
+    // A JSON-RPC 2.0 server can return HTTP 200 with an `error` object and no
+    // `result`; surface it rather than reporting a misleading "missing result".
+    let seq = resp.get("result").and_then(|r| r.as_str()).with_context(|| {
+        match resp.get("error") {
+            Some(err) => format!("fullnode JSON-RPC error: {err}"),
+            None => "missing/non-string `result` in JSON-RPC response".to_string(),
+        }
+    })?;
     seq.parse::<u64>()
         .with_context(|| format!("parse checkpoint sequence number from {seq:?}"))
 }
