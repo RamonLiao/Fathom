@@ -19,6 +19,12 @@ pub const REMOTE_STORE_URL: &str = "https://checkpoints.testnet.sui.io";
 /// Bounded subscriber channel size; doubles as the ingestion backpressure signal.
 pub const SUBSCRIBER_CHANNEL_SIZE: usize = 200;
 
+/// How many checkpoints to rewind from the network tip on startup. The oracle
+/// emits price/SVI batches roughly once per second, so a small window already
+/// contains live events to decode — while staying within the bucket's retention
+/// (old checkpoints are pruned). 0 would tail strictly from the tip.
+pub const START_BACKFILL_CHECKPOINTS: u64 = 500;
+
 /// Liveness window: if 0 oracle events are seen within this many checkpoints from
 /// start, WARN (config drift — e.g. package redeployed → filter matches nothing).
 pub const LIVENESS_WINDOW_CHECKPOINTS: u64 = 200;

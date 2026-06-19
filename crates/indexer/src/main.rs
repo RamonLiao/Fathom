@@ -14,7 +14,10 @@ use url::Url;
 use sui_indexer_alt_framework::ingestion::ingestion_client::IngestionClientArgs;
 use sui_indexer_alt_framework::ingestion::{ClientArgs, IngestionConfig, IngestionService};
 
-use indexer::config::{PACKAGE_ID, REMOTE_STORE_URL, SUBSCRIBER_CHANNEL_SIZE};
+use indexer::config::{
+    FULLNODE_URL, PACKAGE_ID, REMOTE_STORE_URL, START_BACKFILL_CHECKPOINTS,
+    SUBSCRIBER_CHANNEL_SIZE,
+};
 use indexer::pipeline::{check_liveness, handle_event, PipelineState};
 use indexer::sink::StdoutSink;
 
@@ -42,11 +45,18 @@ async fn main() -> Result<()> {
     .context("build IngestionService")?;
 
     let mut rx = svc.subscribe_bounded(SUBSCRIBER_CHANNEL_SIZE);
-    let start = svc
-        .latest_checkpoint_number()
-        .await
-        .context("fetch latest checkpoint")?;
-    tracing::info!(start, %REMOTE_STORE_URL, "starting oracle event indexer from network tip");
+    // NB: we deliberately do NOT use `svc.latest_checkpoint_number()`. That reads
+    // the remote store's `_metadata/watermark` blob, which the public testnet
+    // checkpoint bucket does not publish → it silently returns 0 and we would
+    // backfill from genesis. Read the real tip from the fullnode instead.
+    let tip = fetch_network_tip().await.context("fetch network tip")?;
+    let start = tip.saturating_sub(START_BACKFILL_CHECKPOINTS);
+    tracing::info!(
+        start,
+        tip,
+        %REMOTE_STORE_URL,
+        "starting oracle event indexer from network tip"
+    );
 
     // Drives checkpoint fetching as background tasks.
     let service = svc.run(start..).await.context("start ingestion")?;
@@ -69,6 +79,35 @@ async fn main() -> Result<()> {
     service.main().await.context("ingestion service")?;
     consumer.await.context("consumer task panicked")??;
     Ok(())
+}
+
+/// Fetch the latest checkpoint sequence number from the fullnode's JSON-RPC.
+/// The result field is a decimal string (`U64` is JSON-encoded as a string).
+async fn fetch_network_tip() -> Result<u64> {
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "sui_getLatestCheckpointSequenceNumber",
+        "params": [],
+    });
+    let resp: serde_json::Value = reqwest::Client::new()
+        .post(FULLNODE_URL)
+        .json(&body)
+        .send()
+        .await
+        .context("POST sui_getLatestCheckpointSequenceNumber")?
+        .error_for_status()
+        .context("fullnode returned error status")?
+        .json()
+        .await
+        .context("parse JSON-RPC response")?;
+
+    let seq = resp
+        .get("result")
+        .and_then(|r| r.as_str())
+        .context("missing/non-string `result` in JSON-RPC response")?;
+    seq.parse::<u64>()
+        .with_context(|| format!("parse checkpoint sequence number from {seq:?}"))
 }
 
 /// Extract `oracle`-module events for our package from one checkpoint and run

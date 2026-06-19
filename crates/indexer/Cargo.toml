@@ -17,6 +17,13 @@ tokio = { version = "1", features = ["full"] }
 sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", rev = "2e196df64878a6ee6786cf739474e8bf4a85f726", default-features = false }
 prometheus = "0.14"
 url = "2.3.1"
+# Network-tip discovery: the public testnet checkpoint bucket publishes no
+# `_metadata/watermark` blob, so the framework's `latest_checkpoint_number()`
+# returns 0 (→ backfill from genesis). We read the tip from the fullnode's
+# JSON-RPC `sui_getLatestCheckpointSequenceNumber` instead. rustls-only to avoid
+# pulling native-tls/openssl into the build.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde_json = "1"
 
 [dev-dependencies]
 bcs = "0.1"

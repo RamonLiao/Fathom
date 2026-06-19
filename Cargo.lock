@@ -2802,6 +2802,8 @@ dependencies = [
  "bcs",
  "pricing",
  "prometheus",
+ "reqwest",
+ "serde_json",
  "sui-indexer-alt-framework",
  "tokio",
  "tracing",
