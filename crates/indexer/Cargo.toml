@@ -10,9 +10,13 @@ anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 tokio = { version = "1", features = ["full"] }
-# Live ingestion wiring (Phase B). Pinned to a buildable mainline rev confirmed
-# against the real API (Processor/Service surface differs from v1.72 sketch):
-# sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", rev = "2e196df64878a6ee6786cf739474e8bf4a85f726" }
+# Live ingestion wiring (Phase B). Pinned to a mainline rev whose real API was
+# confirmed against source (the v1.72 Service::builder sketch never existed; we
+# drive IngestionService directly). default-features=false drops the `cluster`
+# feature (Postgres/diesel) we don't need for the stdout A-path.
+sui-indexer-alt-framework = { git = "https://github.com/MystenLabs/sui.git", rev = "2e196df64878a6ee6786cf739474e8bf4a85f726", default-features = false }
+prometheus = "0.14"
+url = "2.3.1"
 
 [dev-dependencies]
 bcs = "0.1"
