@@ -37,6 +37,19 @@ pub trait Sink {
     fn emit(&self, id: &EventId, checkpoint_seq: u64, ev: &DecodedEvent) -> anyhow::Result<()>;
 }
 
+/// Fans each event out to every child sink, returning the first error (so a
+/// failing PostgresSink takes the whole indexer down — fail loud).
+pub struct TeeSink(pub Vec<Box<dyn Sink + Send + Sync>>);
+
+impl Sink for TeeSink {
+    fn emit(&self, id: &EventId, checkpoint_seq: u64, ev: &DecodedEvent) -> anyhow::Result<()> {
+        for sink in &self.0 {
+            sink.emit(id, checkpoint_seq, ev)?;
+        }
+        Ok(())
+    }
+}
+
 pub struct StdoutSink;
 
 impl Sink for StdoutSink {
@@ -69,5 +82,54 @@ impl Sink for StdoutSink {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    struct CountSink(Arc<AtomicUsize>);
+    impl Sink for CountSink {
+        fn emit(&self, _: &EventId, _: u64, _: &DecodedEvent) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+    struct ErrSink;
+    impl Sink for ErrSink {
+        fn emit(&self, _: &EventId, _: u64, _: &DecodedEvent) -> anyhow::Result<()> {
+            Err(anyhow::anyhow!("boom"))
+        }
+    }
+
+    fn sample() -> DecodedEvent {
+        DecodedEvent::Prices(types::events::OraclePricesUpdated {
+            oracle_id: types::events::ObjId([0; 32]),
+            spot: 1,
+            forward: 1,
+            timestamp: 1,
+        })
+    }
+
+    #[test]
+    fn tee_fans_out_to_all() {
+        let c = Arc::new(AtomicUsize::new(0));
+        let tee = TeeSink(vec![
+            Box::new(CountSink(c.clone())),
+            Box::new(CountSink(c.clone())),
+        ]);
+        tee.emit(&EventId { tx_digest: "x".into(), event_index: 0 }, 1, &sample())
+            .unwrap();
+        assert_eq!(c.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn tee_propagates_first_error() {
+        let tee = TeeSink(vec![Box::new(ErrSink)]);
+        let r = tee.emit(&EventId { tx_digest: "x".into(), event_index: 0 }, 1, &sample());
+        assert!(r.is_err());
     }
 }

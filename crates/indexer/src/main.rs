@@ -19,7 +19,7 @@ use indexer::config::{
     SUBSCRIBER_CHANNEL_SIZE,
 };
 use indexer::pipeline::{check_liveness, handle_event, PipelineState};
-use indexer::sink::StdoutSink;
+use indexer::sink::{StdoutSink, TeeSink};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -58,18 +58,36 @@ async fn main() -> Result<()> {
         "starting oracle event indexer (backfilling from tip - START_BACKFILL_CHECKPOINTS)"
     );
 
+    let pool_and_rx = match std::env::var("DATABASE_URL") {
+        Ok(url) => {
+            let pool = indexer::postgres::connect_pool(&url).await.context("init postgres")?;
+            let (tx, pg_rx) = indexer::postgres::channel();
+            tracing::info!("postgres sink enabled");
+            Some((pool, tx, pg_rx))
+        }
+        Err(_) => {
+            tracing::info!("DATABASE_URL unset — stdout sink only");
+            None
+        }
+    };
+
+    // Build the sink set: always stdout; postgres when configured.
+    let mut sinks: Vec<Box<dyn indexer::sink::Sink + Send + Sync>> = vec![Box::new(StdoutSink)];
+    let writer = pool_and_rx.map(|(pool, tx, pg_rx)| {
+        sinks.push(Box::new(indexer::postgres::PostgresSink::new(tx)));
+        tokio::spawn(indexer::postgres::run_writer(pg_rx, pool))
+    });
+    let tee = TeeSink(sinks);
+
     // Drives checkpoint fetching as background tasks.
     let service = svc.run(start..).await.context("start ingestion")?;
 
-    // Consume the checkpoint stream concurrently with the ingestion service.
     let consumer = tokio::spawn(async move {
-        let sink = StdoutSink;
+        let sink = tee; // consumer OWNS the sink → its PostgresSink Sender drops when this task ends
         let mut state = PipelineState::default();
         while let Some(envelope) = rx.recv().await {
-            if let Err(e) = process_checkpoint(&envelope, &mut state, &sink as &dyn indexer::sink::Sink) {
-                // A decode failure is a loud, fatal schema-drift signal (Rule 12):
-                // stop rather than silently skipping oracle data.
-                tracing::error!(error = %e, "fatal decode failure — stopping indexer");
+            if let Err(e) = process_checkpoint(&envelope, &mut state, &sink) {
+                tracing::error!(error = %e, "fatal — stopping indexer");
                 return Err::<(), anyhow::Error>(e);
             }
         }
@@ -78,6 +96,11 @@ async fn main() -> Result<()> {
 
     service.main().await.context("ingestion service")?;
     consumer.await.context("consumer task panicked")??;
+    // Consumer has ended → tee (and its Sender) dropped → channel closed.
+    // Now drain the writer; it returns once all buffered rows are inserted.
+    if let Some(writer) = writer {
+        writer.await.context("writer task panicked")??;
+    }
     Ok(())
 }
 
