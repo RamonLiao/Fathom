@@ -13,23 +13,36 @@ pub enum SanityStatus {
     Checked(Verdict),
 }
 
+/// Globally-unique on-chain identity of an event: the content-addressed
+/// transaction digest (base58) + its index within that tx's event list.
+/// This is the Postgres dedup key (ON CONFLICT), so a re-backfill of the same
+/// checkpoints inserts no duplicates.
+#[derive(Debug, Clone)]
+pub struct EventId {
+    pub tx_digest: String,
+    pub event_index: u64,
+}
+
 /// A decoded oracle event with its sanity status, ready to emit.
 #[derive(Debug)]
 pub enum DecodedEvent {
-    Svi { ev: OracleSviUpdated, status: SanityStatus },
+    Svi { ev: OracleSviUpdated, status: SanityStatus, forward_used: Option<u64> },
     Prices(OraclePricesUpdated),
 }
 
 pub trait Sink {
-    fn emit(&self, checkpoint_seq: u64, ev: &DecodedEvent);
+    /// Fallible so a sink whose downstream is a bounded channel can signal
+    /// backpressure exhaustion (channel Full / writer dead) as a loud error
+    /// rather than silently dropping events (Rule 12).
+    fn emit(&self, id: &EventId, checkpoint_seq: u64, ev: &DecodedEvent) -> anyhow::Result<()>;
 }
 
 pub struct StdoutSink;
 
 impl Sink for StdoutSink {
-    fn emit(&self, checkpoint_seq: u64, ev: &DecodedEvent) {
+    fn emit(&self, id: &EventId, checkpoint_seq: u64, ev: &DecodedEvent) -> anyhow::Result<()> {
         match ev {
-            DecodedEvent::Svi { ev, status } => {
+            DecodedEvent::Svi { ev, status, forward_used } => {
                 let svi = ev.to_svi();
                 let sanity = match status {
                     SanityStatus::Untested => "untested",
@@ -37,9 +50,10 @@ impl Sink for StdoutSink {
                     SanityStatus::Checked(_) => "dirty",
                 };
                 tracing::info!(
-                    checkpoint = checkpoint_seq, oracle = %ev.oracle_id,
+                    checkpoint = checkpoint_seq, tx = %id.tx_digest, ev_idx = id.event_index,
+                    oracle = %ev.oracle_id,
                     a = svi.a, b = svi.b, rho = svi.rho, m = svi.m, sigma = svi.sigma,
-                    sanity,
+                    forward_used = forward_used.unwrap_or(0), sanity,
                     "OracleSVIUpdated"
                 );
                 if let SanityStatus::Checked(Verdict::Dirty(reasons)) = status {
@@ -48,11 +62,12 @@ impl Sink for StdoutSink {
             }
             DecodedEvent::Prices(p) => {
                 tracing::info!(
-                    checkpoint = checkpoint_seq, oracle = %p.oracle_id,
-                    spot = p.spot, forward = p.forward,
+                    checkpoint = checkpoint_seq, tx = %id.tx_digest, ev_idx = id.event_index,
+                    oracle = %p.oracle_id, spot = p.spot, forward = p.forward,
                     "OraclePricesUpdated"
                 );
             }
         }
+        Ok(())
     }
 }

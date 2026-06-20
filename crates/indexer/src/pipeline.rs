@@ -9,7 +9,7 @@ use anyhow::{anyhow, Result};
 use pricing::invariants::check_svi_arb_free;
 use types::events::{OraclePricesUpdated, OracleSviUpdated};
 
-use crate::sink::{DecodedEvent, SanityStatus, Sink};
+use crate::sink::{DecodedEvent, EventId, SanityStatus, Sink};
 
 /// Tracks last-seen forward PER oracle (an SVI must be checked against its own
 /// oracle's forward — the protocol runs many oracles concurrently) plus event
@@ -29,6 +29,7 @@ pub fn handle_event(
     checkpoint_seq: u64,
     struct_name: &str,
     contents: &[u8],
+    id: &EventId,
     state: &mut PipelineState,
     sink: &dyn Sink,
 ) -> Result<()> {
@@ -37,24 +38,19 @@ pub fn handle_event(
             let ev = OracleSviUpdated::from_bcs(contents)
                 .map_err(|e| anyhow!("decode OracleSVIUpdated: {e}"))?;
             state.oracle_events_seen += 1;
-            let status = match state.forward_1e9_by_oracle.get(&ev.oracle_id.0) {
-                Some(&fwd) => SanityStatus::Checked(check_svi_arb_free(&ev.to_svi(), fwd)),
-                // No forward seen yet for THIS oracle → cannot run the curve check.
-                // Report Untested (NOT clean) rather than borrow another oracle's forward.
+            let forward_used = state.forward_1e9_by_oracle.get(&ev.oracle_id.0).copied();
+            let status = match forward_used {
+                Some(fwd) => SanityStatus::Checked(check_svi_arb_free(&ev.to_svi(), fwd)),
                 None => SanityStatus::Untested,
             };
-            sink.emit(checkpoint_seq, &DecodedEvent::Svi { ev, status });
-            Ok(())
+            sink.emit(id, checkpoint_seq, &DecodedEvent::Svi { ev, status, forward_used })
         }
         "OraclePricesUpdated" => {
             let ev = OraclePricesUpdated::from_bcs(contents)
                 .map_err(|e| anyhow!("decode OraclePricesUpdated: {e}"))?;
             state.oracle_events_seen += 1;
-            state
-                .forward_1e9_by_oracle
-                .insert(ev.oracle_id.0, ev.forward);
-            sink.emit(checkpoint_seq, &DecodedEvent::Prices(ev));
-            Ok(())
+            state.forward_1e9_by_oracle.insert(ev.oracle_id.0, ev.forward);
+            sink.emit(id, checkpoint_seq, &DecodedEvent::Prices(ev))
         }
         // Other oracle structs (Settled, etc.) ignored this round.
         _ => Ok(()),
@@ -81,13 +77,13 @@ pub fn check_liveness(checkpoint_seq: u64, state: &mut PipelineState) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sink::{DecodedEvent, SanityStatus};
+    use crate::sink::{DecodedEvent, EventId, SanityStatus};
     use std::cell::RefCell;
     use types::events::{I64Raw, ObjId, OraclePricesUpdated, OracleSviUpdated};
 
     struct CaptureSink(RefCell<Vec<String>>);
     impl Sink for CaptureSink {
-        fn emit(&self, _seq: u64, ev: &DecodedEvent) {
+        fn emit(&self, _id: &EventId, _seq: u64, ev: &DecodedEvent) -> anyhow::Result<()> {
             let tag = match ev {
                 DecodedEvent::Svi { status, .. } => match status {
                     SanityStatus::Untested => "svi:untested".to_string(),
@@ -96,8 +92,22 @@ mod tests {
                 DecodedEvent::Prices(_) => "prices".to_string(),
             };
             self.0.borrow_mut().push(tag);
+            Ok(())
         }
     }
+
+    // A capturing sink that records forward_used for SVI events.
+    struct ForwardSink(RefCell<Vec<Option<u64>>>);
+    impl Sink for ForwardSink {
+        fn emit(&self, _id: &EventId, _seq: u64, ev: &DecodedEvent) -> anyhow::Result<()> {
+            if let DecodedEvent::Svi { forward_used, .. } = ev {
+                self.0.borrow_mut().push(*forward_used);
+            }
+            Ok(())
+        }
+    }
+
+    fn eid() -> EventId { EventId { tx_digest: "test".into(), event_index: 0 } }
 
     // The single clean BTC-like oracle sample from the architecture doc.
     fn svi_bytes(oracle: [u8; 32]) -> Vec<u8> {
@@ -123,8 +133,8 @@ mod tests {
         let sink = CaptureSink(RefCell::new(vec![]));
         let mut st = PipelineState::default();
         let a = [0xAA; 32];
-        handle_event(1, "OraclePricesUpdated", &prices_bytes(a, 73_744_082_479_138), &mut st, &sink).unwrap();
-        handle_event(1, "OracleSVIUpdated", &svi_bytes(a), &mut st, &sink).unwrap();
+        handle_event(1, "OraclePricesUpdated", &prices_bytes(a, 73_744_082_479_138), &eid(), &mut st, &sink).unwrap();
+        handle_event(1, "OracleSVIUpdated", &svi_bytes(a), &eid(), &mut st, &sink).unwrap();
         assert_eq!(*sink.0.borrow(), vec!["prices", "svi:true"]);
         assert_eq!(st.oracle_events_seen, 2);
     }
@@ -139,9 +149,9 @@ mod tests {
         let a = [0xAA; 32];
         let b = [0xBB; 32];
         // Oracle A reports a forward 10x off from B's strikes.
-        handle_event(1, "OraclePricesUpdated", &prices_bytes(a, 737_440_824_791_380), &mut st, &sink).unwrap();
+        handle_event(1, "OraclePricesUpdated", &prices_bytes(a, 737_440_824_791_380), &eid(), &mut st, &sink).unwrap();
         // Oracle B's SVI arrives before B's own prices.
-        handle_event(1, "OracleSVIUpdated", &svi_bytes(b), &mut st, &sink).unwrap();
+        handle_event(1, "OracleSVIUpdated", &svi_bytes(b), &eid(), &mut st, &sink).unwrap();
         assert_eq!(*sink.0.borrow(), vec!["prices", "svi:untested"]);
     }
 
@@ -153,7 +163,7 @@ mod tests {
         // Err, not silently produce garbage.
         let bad = svi_bytes([0xCC; 32]);
         let truncated = &bad[..bad.len() - 1];
-        let r = handle_event(1, "OracleSVIUpdated", truncated, &mut st, &sink);
+        let r = handle_event(1, "OracleSVIUpdated", truncated, &eid(), &mut st, &sink);
         assert!(r.is_err(), "malformed event must error loudly");
         assert!(sink.0.borrow().is_empty(), "nothing emitted on decode failure");
     }
@@ -162,8 +172,21 @@ mod tests {
     fn unknown_struct_ignored() {
         let sink = CaptureSink(RefCell::new(vec![]));
         let mut st = PipelineState::default();
-        handle_event(1, "OracleSettled", &[], &mut st, &sink).unwrap();
+        handle_event(1, "OracleSettled", &[], &eid(), &mut st, &sink).unwrap();
         assert!(sink.0.borrow().is_empty());
+    }
+
+    #[test]
+    fn svi_carries_the_forward_it_was_checked_against() {
+        let sink = ForwardSink(RefCell::new(vec![]));
+        let mut st = PipelineState::default();
+        let a = [0xAA; 32];
+        // No forward yet → Untested → forward_used None.
+        handle_event(1, "OracleSVIUpdated", &svi_bytes(a), &eid(), &mut st, &sink).unwrap();
+        // Forward arrives, then SVI again → forward_used Some(that forward).
+        handle_event(1, "OraclePricesUpdated", &prices_bytes(a, 73_744_082_479_138), &eid(), &mut st, &sink).unwrap();
+        handle_event(1, "OracleSVIUpdated", &svi_bytes(a), &eid(), &mut st, &sink).unwrap();
+        assert_eq!(*sink.0.borrow(), vec![None, Some(73_744_082_479_138)]);
     }
 
     #[test]

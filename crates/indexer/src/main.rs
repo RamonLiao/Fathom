@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
         let sink = StdoutSink;
         let mut state = PipelineState::default();
         while let Some(envelope) = rx.recv().await {
-            if let Err(e) = process_checkpoint(&envelope, &mut state, &sink) {
+            if let Err(e) = process_checkpoint(&envelope, &mut state, &sink as &dyn indexer::sink::Sink) {
                 // A decode failure is a loud, fatal schema-drift signal (Rule 12):
                 // stop rather than silently skipping oracle data.
                 tracing::error!(error = %e, "fatal decode failure — stopping indexer");
@@ -123,20 +123,27 @@ async fn fetch_network_tip() -> Result<u64> {
 fn process_checkpoint(
     envelope: &Arc<sui_indexer_alt_framework::ingestion::ingestion_client::CheckpointEnvelope>,
     state: &mut PipelineState,
-    sink: &StdoutSink,
+    sink: &dyn indexer::sink::Sink,
 ) -> Result<()> {
     let checkpoint = &envelope.checkpoint;
     let seq = checkpoint.summary.sequence_number;
 
     for tx in &checkpoint.transactions {
         let Some(events) = &tx.events else { continue };
-        for event in &events.data {
-            // Filter: our package (defining address of the event type) + oracle module.
+        // base58 digest of the transaction (content-addressed → stable dedup key).
+        let tx_digest = tx.transaction.digest().to_string();
+        // Enumerate the UNFILTERED event list so event_index matches the chain's
+        // canonical event_seq; filter INSIDE the loop (never enumerate the filtered subset).
+        for (event_index, event) in events.data.iter().enumerate() {
             if event.type_.address.to_canonical_string(true) == PACKAGE_ID
                 && event.type_.module.as_str() == "oracle"
             {
+                let id = indexer::sink::EventId {
+                    tx_digest: tx_digest.clone(),
+                    event_index: event_index as u64,
+                };
                 let name = event.type_.name.as_str();
-                handle_event(seq, name, &event.contents, state, sink)?;
+                handle_event(seq, name, &event.contents, &id, state, sink)?;
             }
         }
     }
