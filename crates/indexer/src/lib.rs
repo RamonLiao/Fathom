@@ -1,3 +1,4 @@
 pub mod config;
 pub mod sink;
 pub mod pipeline;
+pub mod row;
