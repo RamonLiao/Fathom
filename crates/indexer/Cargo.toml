@@ -24,6 +24,9 @@ url = "2.3.1"
 # pulling native-tls/openssl into the build.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde_json = "1"
+# Postgres sink. rustls-only (no openssl). Runtime query() — NO query! macro,
+# so build/CI need no live DB. migrate! embeds the migrations dir at build time.
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "macros", "migrate", "bigdecimal"] }
 
 [dev-dependencies]
 bcs = "0.1"
