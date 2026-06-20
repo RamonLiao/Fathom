@@ -1,59 +1,86 @@
-# Sui Transparency Hub
+# 🌊 Fathom
 
-**The institutional-grade transparency layer for DeepBook Predict** — live 3D SVI vol surface, PLP risk dashboard, arb-free checker, and Walrus-attested risk reports.
+**The institutional-grade risk & transparency layer for DeepBook Predict.**
 
-> Sui Overflow 2026 — Track: DeepBook & Prediction Markets. Fuses Predict idea-bank #9 (Surface Studio) + #10 (PLP Risk Dashboard).
+> **Sui Overflow 2026** — Track: *DeepBook & Prediction Markets*
+> Fuses DeepBook Predict Hackathon Idea Bank **#9 (Surface Studio)** and **#10 (PLP Risk Dashboard)**.
 
-## The problem
+---
 
-Institutional LPs ask one question before depositing into DeepBook Predict's PLP vault: *"Is it safe, where's the inventory, and what does ±5σ do to NAV?"* Today nobody can answer — so serious capital sits out. Generic tools don't fit: DefiLlama tracks TVL but not Sui object state; Block Scholes renders surfaces but doesn't index Sui; SuiVision/BlockVision index Sui but model no derivatives risk.
+## 🛑 The Problem
 
-## What it does
+Institutional liquidity providers (LPs) ask one critical question before deploying capital into DeepBook Predict's PLP vault: 
+*"Is it safe, where is the inventory, and what does ±5σ do to our NAV?"*
 
-- **Surface Studio** — live 3D IV surface (strike × expiry) from `oracle::OracleSVIUpdated`, with a time-travel slider.
-- **Arb-free checker** — flags SVI fits that violate no-arb (digital monotonicity + calendar).
-- **PLP risk dashboard** — utilization, withdrawal-limiter bucket, per-oracle exposure, per-strike inventory heatmap.
-- **±5σ stress simulator** — projected PLP NAV drawdown.
-- **Walrus attestation** — risk snapshots pinned to Walrus, SHA256-verifiable, citable in DAO/IC memos.
-- **Public API** — `GET /v1/surface/btc` + WS stream for institutional consumers.
+Currently, the ecosystem lacks the telemetry to answer this:
+* **SVI Parameters are a Black Box:** `oracle::OracleSVIUpdated` emits raw parameters (`a, b, rho, m, sigma`) that are unreadable to risk managers.
+* **No Arbitrage Validation:** SVI fits can violate calendar or butterfly no-arbitrage conditions, silently mispricing options without warning.
+* **PLP is Opaque:** LPs see backward-looking yield but cannot track real-time vault utilisation, withdrawal-limiter token-bucket capacity, or oracle concentration.
+* **No Audit Trail:** Risk reports live on mutable servers, leaving no tamper-evident proof for compliance and investment committees.
 
-## Architecture
+---
 
-Off-chain heavy, on-chain light. No new Move contracts for the MVP; a small `attestation::Registry` lands in v1.
+## 🛠️ The Solution
+
+**Fathom** sounds the depths of DeepBook Predict, providing real-time risk modeling, volatility visualisations, and verifiable risk reports.
 
 ```
-Sui testnet ─► Indexer ─► Postgres ─► Engine(+pricing) ─► Redis ─► API ─► Web / consumers
-   │                                       └─► Walrus (attested snapshots) ┄► Move Registry (v1)
-   └─ Predict object state (polled per checkpoint)
+Sui Testnet ─► Custom Indexer ─► Postgres ─► Fathom Engine ─► API / WS ─► Web Dashboard
+                                                 │
+                                                 └─► Walrus (Attested Risk Reports)
 ```
 
-Docs:
-- [`docs/architecture/overview.md`](docs/architecture/overview.md) — start here
-- [`docs/specs/2026-05-28-sui-transparency-hub-architecture.md`](docs/specs/2026-05-28-sui-transparency-hub-architecture.md) — full spec (**Appendix B = verified on-chain ABI**)
-- [`docs/architecture/module-dependency.mmd`](docs/architecture/module-dependency.mmd), [`docs/architecture/data-flow.mmd`](docs/architecture/data-flow.mmd)
-- [`docs/security/threat-model.md`](docs/security/threat-model.md)
-- [`BUSINESS_SPEC.md`](BUSINESS_SPEC.md) — business case, personas, GTM
+### 🔮 1. Surface Studio (Idea #9)
+* **Live 3D SVI Volatility Surface:** Dynamic strike × expiry → IV visualisation using Three.js and Plotly.
+* **Time-Travel Slider:** Scroll back through historical checkpoints to analyse how the vol surface morphed during market shocks.
+* **Arbitrage-Free Checker:** Real-time mathematical validation flagging butterfly (negative probability density) and calendar variance violations.
 
-## Verified on-chain facts (testnet, 2026-05-30)
+### 📊 2. PLP Risk Dashboard (Idea #10)
+* **Real-time Telemetry:** Instant tracking of vault utilisation %, withdrawal-limiter token-bucket capacity, and per-oracle exposure.
+* **Inventory Heatmap:** A per-strike heatmap mapping token concentration against active option expiries.
+* **±5σ Stress Simulator:** Interactive "what-if" simulator projecting PLP NAV drawdowns under extreme market movements.
 
-| | |
+### 🛡️ 3. Walrus-Attested Provenance
+* **Tamper-Evident Risk Reports:** Generate immutable, cryptographically verifiable risk snapshots pinned directly to **Walrus**.
+* **Institutional Citation:** Provides compliance teams and DAOs with citable, tamper-proof URIs (`walrus://...`) for audit trails.
+
+---
+
+## 🏗️ Technical Architecture
+
+* **Frontend:** Next.js 15, Three.js, Plotly, TanStack Query, Tailwind CSS.
+* **Backend:** Node.js (Fastify) / Rust (Axum), Postgres 16, Redis 7.
+* **Sui & Storage Integration:** `@mysten/sui`, Walrus Storage, Sui Testnet (Protocol 124).
+* **On-chain Attestation:** MVP features off-chain verification; v1 introduces a lightweight `AttestationRegistry` shared object on Sui.
+
+---
+
+## 🔍 Verified On-chain Facts (Testnet, 2026-05-30)
+
+| Entity | Address / Detail |
 |---|---|
-| Package | `0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138` |
-| `Predict` shared object | `0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a` |
-| Quote asset | `…::dusdc::DUSDC` (6 decimals) |
-| Backfill | `predict-server.testnet.mystenlabs.com` (`/config`, `/oracles`) |
+| **Package** | `0xf5ea2b3749c65d6e56507cc35388719aadb28f9cab873696a2f8687f5c785138` |
+| **`Predict` Shared Object** | `0xc8736204d12f0a7277c86388a68bf8a194b0a14c5538ad13f22cbd8e2a38028a` |
+| **Quote Asset** | `…::dusdc::DUSDC` (6 decimals) |
+| **Backfill API** | `predict-server.testnet.mystenlabs.com` (`/config`, `/oracles`) |
 
-Three gotchas that drive the design (details in spec Appendix B):
-1. **PLP has no events** — utilization/bucket/inventory read from `Predict` object state.
-2. **Binary digital options** — IV is straight from SVI (no BS inversion); no-arb = digital price monotone in strike.
-3. **Dual fixed-point** — 1e9 for prices/strikes/SVI, DUSDC 6-dec for amounts, `i64` sign-magnitude for `rho`/`m`.
+### ⚡ Key Architectural Gotchas
+1. **PLP has no events:** Utilisation, token-bucket, and inventory are read directly from the `Predict` shared object state.
+2. **Binary digital options:** IV is computed directly from SVI (no Black-Scholes inversion needed). No-arbitrage requires digital option prices to be monotonic in strike.
+3. **Dual fixed-point math:** 1e9 for option prices/strikes/SVI parameters, DUSDC 6-decimal for amounts, and `i64` sign-magnitude format for SVI `rho` and `m`.
 
-## Status
+---
 
-`v0.2` — architecture verified against live testnet. Implementation not yet scaffolded.
+## 🚀 Getting Started
 
-Next: `indexer/` skeleton + `pricing/` golden-vector tests against the live SVI sample.
+1. **Clone the repository:**
+   ```bash
+   git clone <repo-url>
+   cd 02-sui-transparency-hub
+   ```
 
-## Stack
-
-Next.js 15 · Three.js · Plotly · TanStack Query · Node/Fastify (or Rust/Axum) · Postgres 16 · Redis 7 · `@mysten/sui` · Walrus · Sui testnet (Protocol 124).
+2. **Install dependencies & launch dev server:**
+   ```bash
+   npm install
+   npm run dev
+   ```
