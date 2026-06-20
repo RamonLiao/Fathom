@@ -1,6 +1,8 @@
 //! Runtime-DB integration tests. `#[sqlx::test]` creates an isolated, migrated
 //! database per test (requires DATABASE_URL → a reachable Postgres). Not part of
-//! the offline gate; run in the live smoke: `cargo test -p indexer --test postgres_integration`.
+//! the offline gate — each is `#[ignore]`d so `cargo test --workspace` stays
+//! green without a DB. Run in the live smoke with:
+//! `cargo test -p indexer --test postgres_integration -- --ignored`.
 
 use indexer::postgres::{run_writer, PostgresSink, channel};
 use indexer::sink::Sink;
@@ -30,6 +32,7 @@ async fn ingest(pool: sqlx::PgPool, items: Vec<(EventId, u64, DecodedEvent)>) {
 }
 
 #[sqlx::test]
+#[ignore = "requires DATABASE_URL; run in live smoke with -- --ignored"]
 async fn reinserting_same_event_id_is_idempotent(pool: sqlx::PgPool) {
     // WHY: startup re-backfills from tip-N, so the SAME tx re-appears. Its digest
     // is content-addressed → identical (tx_digest, event_index) → ON CONFLICT must
@@ -42,6 +45,7 @@ async fn reinserting_same_event_id_is_idempotent(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test]
+#[ignore = "requires DATABASE_URL; run in live smoke with -- --ignored"]
 async fn sanity_is_reproducible_regardless_of_replay_order(pool: sqlx::PgPool) {
     // WHY: the stored verdict is a pure function of (raw SVI, sanity_forward).
     // Two ingests of the SAME svi event with the SAME forward_used must yield the
@@ -61,6 +65,7 @@ async fn sanity_is_reproducible_regardless_of_replay_order(pool: sqlx::PgPool) {
 }
 
 #[sqlx::test]
+#[ignore = "requires DATABASE_URL; run in live smoke with -- --ignored"]
 async fn oracle_latest_view_returns_most_recent_per_oracle(pool: sqlx::PgPool) {
     let o = [0xCC; 32];
     let mk = |idx: u64, seq: u64| (
