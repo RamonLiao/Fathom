@@ -132,8 +132,10 @@ async fn poll_matrices(
                 return Ok(());
             }
         };
-        if let Some(err) = resp.pointer("/result/error") {
-            anyhow::bail!("getDynamicFields error (check oracle_matrices table id): {err}");
+        // getDynamicFields returns a Page directly as `result`; a deterministic RPC
+        // failure is a TOP-LEVEL `/error` (unlike getObject's embedded result.error).
+        if let Some(err) = resp.pointer("/error") {
+            anyhow::bail!("getDynamicFields RPC error (check oracle_matrices table id): {err}");
         }
         let result = resp
             .pointer("/result")
@@ -174,6 +176,9 @@ async fn poll_matrices(
                 return Ok(());
             }
         };
+        if let Some(err) = resp.pointer("/error") {
+            anyhow::bail!("multiGetObjects RPC error: {err}");
+        }
         let objs = resp
             .pointer("/result")
             .and_then(|v| v.as_array())
