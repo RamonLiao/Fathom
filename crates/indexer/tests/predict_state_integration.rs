@@ -50,3 +50,33 @@ async fn latest_view_picks_max_version_and_decodes(pool: sqlx::PgPool) {
     assert!((nav - 3.0).abs() < 1e-9, "nav decode wrong: {nav}");
     assert!((util - 1.5).abs() < 1e-9, "utilization decode wrong: {util}");
 }
+
+#[sqlx::test]
+#[ignore = "requires DATABASE_URL; run in live smoke with -- --ignored"]
+async fn zero_balance_utilization_is_null_not_divide_by_zero(pool: sqlx::PgPool) {
+    // WHY: a drained vault (balance=0) must not blow up the view. NULLIF guards the
+    // division → utilization is NULL, not an error or +Inf. testnet's RateLimiter
+    // can legitimately sit at capacity=0, and an empty vault is a real boundary.
+    insert_predict_state(&pool, &state(7, 0, 0)).await.unwrap();
+    let util: Option<f64> =
+        sqlx::query_scalar("SELECT utilization FROM predict_latest")
+            .fetch_one(&pool).await.unwrap();
+    assert_eq!(util, None, "zero balance must yield NULL utilization, not divide-by-zero");
+}
+
+#[sqlx::test]
+#[ignore = "requires DATABASE_URL; run in live smoke with -- --ignored"]
+async fn enabled_limiter_exposes_decoded_withdrawal(pool: sqlx::PgPool) {
+    // WHY: the view's CASE has two branches. testnet runs wl_enabled=false (→ NULL,
+    // covered elsewhere); this pins the OTHER branch — when the limiter is enabled,
+    // withdrawal_available must decode available/1e6 (DUSDC), not stay NULL.
+    let mut s = state(30, 5_000_000, 0);
+    s.wl_enabled = true;
+    s.wl_available = 2_500_000; // 2.5 DUSDC
+    insert_predict_state(&pool, &s).await.unwrap();
+    let w: Option<f64> =
+        sqlx::query_scalar("SELECT withdrawal_available FROM predict_latest")
+            .fetch_one(&pool).await.unwrap();
+    assert!(w.is_some(), "enabled limiter must expose a value, not NULL");
+    assert!((w.unwrap() - 2.5).abs() < 1e-9, "withdrawal decode wrong: {w:?}");
+}
