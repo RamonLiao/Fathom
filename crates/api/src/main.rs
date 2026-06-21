@@ -1,14 +1,5 @@
-mod state;
-
-use axum::{routing::get, Router};
-use state::AppState;
+use api::state::AppState;
 use std::env;
-
-pub fn build_router(state: AppState) -> Router {
-    Router::new()
-        .route("/api/health", get(|| async { "ok" }))
-        .with_state(state)
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -25,7 +16,7 @@ async fn main() -> anyhow::Result<()> {
         .connect(&database_url)
         .await?;
 
-    let app = build_router(AppState { pool });
+    let app = api::build_router(AppState { pool });
     let listener = tokio::net::TcpListener::bind(&bind).await?;
     tracing::info!("api listening on {bind}");
     axum::serve(listener, app).await?;
