@@ -90,12 +90,16 @@ async fn fetch_object(client: &reqwest::Client) -> Result<serde_json::Value> {
         .await
         .context("parse JSON-RPC response")?;
 
-    // JSON-RPC 2.0 can return HTTP 200 with an `error` object and no `result`.
-    resp.get("result")
-        .and_then(|r| r.get("data"))
-        .cloned()
-        .with_context(|| match resp.get("error") {
-            Some(err) => format!("fullnode JSON-RPC error: {err}"),
-            None => "missing result.data in getObject response".to_string(),
-        })
+    // No `result.data` means either a JSON-RPC `error` (top-level), or an object
+    // read `result.error` (e.g. `{"code":"notExists"}` for a wrong/deleted id).
+    // Surface whichever is present so the WARN is actionable, not a generic miss.
+    resp.pointer("/result/data").cloned().with_context(|| {
+        if let Some(err) = resp.pointer("/result/error") {
+            format!("getObject error: {err}")
+        } else if let Some(err) = resp.get("error") {
+            format!("fullnode JSON-RPC error: {err}")
+        } else {
+            "missing result.data in getObject response".to_string()
+        }
+    })
 }
