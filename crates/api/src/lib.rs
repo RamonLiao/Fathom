@@ -10,5 +10,6 @@ pub fn build_router(state: AppState) -> Router {
         .route("/api/health", get(|| async { "ok" }))
         .route("/api/vault", get(routes::vault::vault))
         .route("/api/oracles", get(routes::oracles::oracles))
+        .route("/api/inventory", get(routes::inventory::inventory))
         .with_state(state)
 }
