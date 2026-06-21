@@ -42,6 +42,31 @@ Predict.withdrawal_limiter (…::rate_limiter::RateLimiter):
 (This is the still-supported `getObject` JSON-RPC path — unrelated to the retired checkpoint-stream
 `SuiEvent.parsed_json`.)
 
+### Data-access note (sui-architect/sui-indexer review, F1)
+
+JSON-RPC is officially marked deprecated (Quorum Driver disabled; removal slated ~2026-04; gRPC is GA
+primary, GraphQL beta for indexers). **However, empirically `sui_getObject` JSON-RPC still works on
+testnet as of 2026-06-21** (live-verified), and the A path already depends on JSON-RPC. We ship
+JSON-RPC for consistency and simplicity. **Migration path:** if JSON-RPC is sunset, swap the single
+`getObject` call for gRPC `GetObject` (object-state read) — the parse layer (`parse_predict_state`) is
+isolated from transport, so only the fetch function changes.
+
+### Why polling, not a framework Processor (F2)
+
+The sui-indexer framework's own decision table routes "read current object state" to gRPC/GraphQL, not
+a checkpoint-stream Processor. We considered adding a second `Processor` to the A-path Service that
+scans each checkpoint's `output_objects` for the Predict object — that would give exact checkpoint
+correlation with oracle events and miss no intermediate state. **Rejected for this round:** it requires
+hand BCS-decoding the object from the stream (no `showContent` there — the BCS-layout work we
+deliberately avoided), and the A path is intentionally storeless (no framework watermark). A decoupled
+poller is far simpler and sufficient for a "latest NAV + coarse time series" dashboard.
+
+**Accepted limitation (F3):** polling has no chain-time axis. `object_version` is monotonic but not
+mappable to a checkpoint/timestamp, and `ingested_at` is poll wall-clock (lags the actual mutation by
+up to `POLL_INTERVAL_SECS`). NAV time-series is therefore plotted against poll-time, not chain-time, and
+mutations between ticks are not individually captured. Acceptable for the dashboard; revisit with
+option (b) only if oracle↔NAV temporal alignment is required.
+
 ## Architecture
 
 New independent binary `crates/indexer/src/bin/poller.rs`. Independent lifecycle from the A-path
@@ -107,6 +132,21 @@ LIMIT 1;
 
 **Scale gotcha:** amounts are **DUSDC 6-dec** (`/1e6`) — NOT the oracle 1e9 scale of the A path.
 Mixing them is a 1000× error.
+
+**Why `object_version` dedup matters beyond idempotency (F5):** the PK caps row count at the number of
+*distinct vault states*, not the number of polls. Polling an unchanged object 1000× inserts 0 new rows.
+This bounds table growth to real mutations, so no retention/pruning is needed this round.
+
+## Security / threat model (sui-architect review, F5)
+
+Read-only poller — small surface:
+- **Malformed / hostile object response** → handled: `parse_predict_state` returns a loud `Err`
+  (schema-drift = fatal stop).
+- **Single-fullnode trust** — a transparency dashboard trusting one fullnode for NAV is mildly ironic; a
+  fullnode could in principle misreport. Cross-checking two fullnodes is deferred (YAGNI for the
+  hackathon); documented as a known trust assumption.
+- **SQL injection** → none: all values via sqlx bind params / `$n::numeric` casts.
+- **Table growth** → bounded by `object_version` dedup (see above), no unbounded accumulation.
 
 ## Error handling (Rule 12 — distinguish transient vs drift)
 
