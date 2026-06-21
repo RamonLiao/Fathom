@@ -50,6 +50,7 @@ async fn inventory_keeps_range_qty_raw_and_passes_page_leaves(pool: PgPool) {
     assert_eq!(row["min_strike"].as_f64().unwrap(), 50000.0); // /1e9
     assert_eq!(row["page_leaves"][0]["q_up"].as_str().unwrap(), "123");
     assert_eq!(row["minted_min_strike"].as_f64().unwrap(), 60000.0);
+    assert_eq!(row["minted_max_strike"].as_f64().unwrap(), 140000.0); // 140_000_000_000_000 / 1e9
 }
 
 #[sqlx::test]
@@ -60,4 +61,5 @@ async fn inventory_nulls_minted_when_sentinel(pool: PgPool) {
     let (_s, json) = get_json(pool, "/api/inventory").await;
     let row = &json.as_array().unwrap()[0];
     assert!(row["minted_min_strike"].is_null());
+    assert!(row["minted_max_strike"].is_null());
 }
