@@ -28,3 +28,8 @@ pub const START_BACKFILL_CHECKPOINTS: u64 = 500;
 /// Liveness window: if 0 oracle events are seen within this many checkpoints from
 /// start, WARN (config drift — e.g. package redeployed → filter matches nothing).
 pub const LIVENESS_WINDOW_CHECKPOINTS: u64 = 200;
+
+/// B-path object poll interval. The Predict object mutates on trades/supply/etc.;
+/// 10s gives a usable NAV time series. `object_version` dedup makes a too-fast
+/// poll cheap (unchanged → no row), so this is a comfort/cost knob, not correctness.
+pub const POLL_INTERVAL_SECS: u64 = 10;
