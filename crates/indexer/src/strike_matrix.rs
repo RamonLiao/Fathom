@@ -212,10 +212,12 @@ pub fn parse_dynamic_fields_page(resp: &Value) -> Result<(Vec<DynField>, Option<
             version,
         });
     }
+    // Required field of a getDynamicFields Page. Missing/non-bool → loud Err, never a
+    // silent `false` that would truncate pagination and drop unread matrices.
     let has_next = resp
         .get("hasNextPage")
         .and_then(Value::as_bool)
-        .unwrap_or(false);
+        .context("getDynamicFields response missing/non-bool hasNextPage")?;
     let next = if has_next {
         Some(
             resp.get("nextCursor")
@@ -520,6 +522,15 @@ mod tests {
     fn parses_dynamic_fields_last_page() {
         let (_items, next) = parse_dynamic_fields_page(&getdf_page(false)).unwrap();
         assert_eq!(next, None);
+    }
+
+    #[test]
+    fn missing_has_next_page_is_loud() {
+        // WHY: a silent `false` default would truncate pagination and silently drop
+        // matrices on unread pages (which then vanish from the view). Fail loud.
+        let mut p = getdf_page(true);
+        p.as_object_mut().unwrap().remove("hasNextPage");
+        assert!(parse_dynamic_fields_page(&p).is_err());
     }
 
     #[test]
