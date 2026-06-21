@@ -72,7 +72,7 @@ pub async fn insert_predict_state(pool: &sqlx::PgPool, s: &PredictState) -> Resu
          VALUES ($1,$2::numeric,$3::numeric,$4::numeric,$5,$6::numeric,$7::numeric,$8::numeric,$9::numeric) \
          ON CONFLICT (object_version) DO NOTHING",
     )
-    .bind(s.object_version as i64)
+    .bind(i64::try_from(s.object_version).context("object_version exceeds i64::MAX")?)
     .bind(s.vault_balance.to_string())
     .bind(s.vault_total_mtm.to_string())
     .bind(s.vault_total_max_payout.to_string())

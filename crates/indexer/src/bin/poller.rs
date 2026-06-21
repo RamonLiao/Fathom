@@ -42,23 +42,38 @@ async fn main() -> Result<()> {
             _ = tokio::time::sleep(Duration::from_secs(POLL_INTERVAL_SECS)) => {}
         }
 
-        // Network failures are transient: warn and try again next tick.
-        let data = match fetch_object(&client).await {
-            Ok(d) => d,
+        // Transport failures (timeout, connection, non-200) are transient: warn
+        // and try again next tick.
+        let resp = match fetch_object(&client).await {
+            Ok(r) => r,
             Err(e) => {
                 tracing::warn!(error = %e, "object fetch failed — retrying next tick");
                 continue;
             }
         };
 
+        // A deterministic RPC `result.error` (notExists / deleted / wrong id) is a
+        // config error, NOT transient — fail loud rather than WARN-spin forever.
+        if let Some(err) = resp.pointer("/result/error") {
+            anyhow::bail!("getObject returned an error (check PREDICT_OBJECT_ID): {err}");
+        }
+        let data = resp
+            .pointer("/result/data")
+            .with_context(|| match resp.get("error") {
+                Some(err) => format!("fullnode JSON-RPC error: {err}"),
+                None => "missing result.data in getObject response".to_string(),
+            })?;
+
         // Parse failure = on-chain layout drift = fatal (decode would be wrong).
-        let state = parse_predict_state(&data).context("parse Predict object")?;
+        let state = parse_predict_state(data).context("parse Predict object")?;
 
         if last_version == Some(state.object_version) {
             continue; // unchanged; ON CONFLICT would no-op anyway
         }
         insert_predict_state(&pool, &state).await.context("persist state")?;
-        let nav = (state.vault_balance + state.vault_total_mtm) as f64 / 1e6;
+        // f64 sum (not u64) — the canonical NAV is the NUMERIC view; this is a
+        // log-only convenience and must never panic on a debug overflow.
+        let nav = (state.vault_balance as f64 + state.vault_total_mtm as f64) / 1e6;
         tracing::info!(
             version = state.object_version,
             nav,
@@ -69,7 +84,11 @@ async fn main() -> Result<()> {
     }
 }
 
-/// Fetch the Predict object's parsed content (`result.data`) via JSON-RPC.
+/// Make the `sui_getObject{showContent}` call and return the raw JSON-RPC
+/// response. Only TRANSPORT failures (timeout, connection, non-200, unparseable
+/// body) are `Err` here — those are transient and the caller retries. The caller
+/// inspects `result.error` / `result.data` to distinguish a deterministic RPC
+/// error (fatal) from real data.
 /// NB: JSON-RPC is officially deprecated (gRPC is GA); empirically still live on
 /// testnet 2026-06-21. If sunset, swap this fn for gRPC `GetObject` — the parser
 /// is transport-agnostic.
@@ -78,7 +97,7 @@ async fn fetch_object(client: &reqwest::Client) -> Result<serde_json::Value> {
         "jsonrpc": "2.0", "id": 1, "method": "sui_getObject",
         "params": [PREDICT_OBJECT_ID, { "showContent": true }],
     });
-    let resp: serde_json::Value = client
+    client
         .post(FULLNODE_URL)
         .json(&body)
         .send()
@@ -88,18 +107,5 @@ async fn fetch_object(client: &reqwest::Client) -> Result<serde_json::Value> {
         .context("fullnode returned error status")?
         .json()
         .await
-        .context("parse JSON-RPC response")?;
-
-    // No `result.data` means either a JSON-RPC `error` (top-level), or an object
-    // read `result.error` (e.g. `{"code":"notExists"}` for a wrong/deleted id).
-    // Surface whichever is present so the WARN is actionable, not a generic miss.
-    resp.pointer("/result/data").cloned().with_context(|| {
-        if let Some(err) = resp.pointer("/result/error") {
-            format!("getObject error: {err}")
-        } else if let Some(err) = resp.get("error") {
-            format!("fullnode JSON-RPC error: {err}")
-        } else {
-            "missing result.data in getObject response".to_string()
-        }
-    })
+        .context("parse JSON-RPC response")
 }
