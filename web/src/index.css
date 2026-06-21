@@ -1,0 +1,11 @@
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Inter+Tight:wght@400;500;600&display=swap');
+@tailwind base; @tailwind components; @tailwind utilities;
+:root {
+  --abyss-900:#0A0E14; --abyss-800:#0E141C; --abyss-700:#131C26; --abyss-600:#1B2733;
+  --ink-200:#C4D0DC; --ink-400:#8295A6; --ink-600:#4A5A6A;
+  --sonar:#38E1C4; --sonar-dim:#1B6E63;
+  --ok:#3FB68B; --warn:#D9A441; --alert:#E5484D; --up:#2DD4BF; --dn:#E0719B;
+}
+body { background:var(--abyss-900); color:var(--ink-200);
+  background-image: radial-gradient(60% 40% at 50% 0%, rgba(56,225,196,0.03), transparent 70%); }
+.tnum { font-variant-numeric: tabular-nums; }

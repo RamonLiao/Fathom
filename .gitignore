@@ -13,3 +13,7 @@ tasks/lessons.md
 # Notes and plans (not to be pushed)
 plan.md
 
+# Web frontend
+web/node_modules
+web/dist
+
