@@ -35,7 +35,7 @@ export function InventoryHeatmap({ matrix }: { matrix: Matrix }) {
         <Band leaves={matrix.page_leaves} side="up" />
         <Band leaves={matrix.page_leaves} side="dn" />
       </div>
-      <div className="font-mono text-[10px] text-ink-600 mt-1">relative intensity (max-normalized) · {matrix.min_strike}–{matrix.max_strike}</div>
+      <div className="font-mono text-[10px] text-ink-600 mt-1">relative intensity (max-normalised) · {matrix.min_strike}–{matrix.max_strike}</div>
     </div>
   );
 }
