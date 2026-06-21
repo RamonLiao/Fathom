@@ -55,8 +55,13 @@ pub fn extract_leaves(page_tree: &Value, leaf_count: usize) -> Result<Vec<PageLe
     if leaf_count == 0 {
         bail!("page_tree_leaf_count is 0 — a StrikeMatrix always has ≥1 leaf; layout drift");
     }
+    // Chain-supplied leaf_count: use checked arithmetic so an absurd value bails loud
+    // instead of overflowing usize and panicking (Rule 12 — never panic on chain data).
+    let expected = leaf_count
+        .checked_mul(2)
+        .and_then(|x| x.checked_sub(1))
+        .context("page_tree_leaf_count too large (2*N-1 overflows) — layout drift")?;
     let nodes = page_tree.as_array().context("page_tree is not an array")?;
-    let expected = 2 * leaf_count - 1;
     if nodes.len() != expected {
         bail!(
             "page_tree length {} != 2*leaf_count-1 ({}) — layout drift",
@@ -154,6 +159,25 @@ pub fn parse_strike_matrices(objects: &[Value]) -> Result<Vec<StrikeMatrixState>
                     "multiGetObjects element has neither data nor error: {o}"
                 ))),
             },
+        })
+        .collect()
+}
+
+/// Object ids that `multiGetObjects` reported as absent (`notExists`/`deleted`) this
+/// fetch. The poller excludes these from the authoritative listing it writes, so the
+/// `_latest` view never surfaces a matrix we just confirmed is gone (the tombstone
+/// stays exactly the live membership, not one tick stale).
+pub fn absent_object_ids(objects: &[Value]) -> Vec<String> {
+    objects
+        .iter()
+        .filter_map(|o| {
+            let err = o.get("error")?;
+            let code = err.get("code").and_then(Value::as_str)?;
+            if code == "notExists" || code == "deleted" {
+                err.get("object_id").and_then(Value::as_str).map(str::to_string)
+            } else {
+                None
+            }
         })
         .collect()
 }
@@ -329,6 +353,26 @@ mod tests {
         // WHY: leaf_count==0 would underflow `2*N-1`/`N-1` (usize) → panic. A panic is
         // not a graceful loud error; reject it as drift instead (Rule 12).
         assert!(extract_leaves(&serde_json::json!([]), 0).is_err());
+    }
+
+    #[test]
+    fn extract_leaves_rejects_overflowing_leaf_count() {
+        // WHY: an absurd chain-supplied leaf_count must bail loud, not overflow usize
+        // and panic (Rule 12 — never panic on chain data).
+        assert!(extract_leaves(&serde_json::json!([]), usize::MAX).is_err());
+    }
+
+    #[test]
+    fn absent_object_ids_collects_only_absence_errors() {
+        // WHY: the poller excludes confirmed-gone matrices from the authoritative
+        // listing; only notExists/deleted count, not other RPC errors.
+        let objs = vec![
+            serde_json::json!({ "error": { "code": "notExists", "object_id": "0xgone1" } }),
+            serde_json::json!({ "error": { "code": "deleted", "object_id": "0xgone2" } }),
+            serde_json::json!({ "error": { "code": "displayError", "object_id": "0xkeep" } }),
+            serde_json::json!({ "data": matrix_obj() }),
+        ];
+        assert_eq!(absent_object_ids(&objs), vec!["0xgone1".to_string(), "0xgone2".to_string()]);
     }
 
     // Real multiGetObjects element shape (result[i]), trimmed page_tree to N=2.

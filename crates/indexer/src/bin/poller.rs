@@ -12,7 +12,7 @@ use anyhow::{Context, Result};
 use indexer::config::{FULLNODE_URL, POLL_INTERVAL_SECS, PREDICT_OBJECT_ID};
 use indexer::object_state::{insert_predict_state, parse_predict_state};
 use indexer::strike_matrix::{
-    chunk_ids, insert_strike_matrix_state, parse_dynamic_fields_page,
+    absent_object_ids, chunk_ids, insert_strike_matrix_state, parse_dynamic_fields_page,
     parse_oracle_matrices_table_id, parse_strike_matrices, replace_matrix_listing, DynField,
 };
 
@@ -168,6 +168,10 @@ async fn poll_matrices(
         .collect();
 
     // 3. Fetch changed matrices, chunked to the server cap; parse + persist.
+    // Matrices the node reports as gone (notExists/deleted) are collected so they can
+    // be excluded from the authoritative listing below (a settle/delist that raced the
+    // listing must not linger in the _latest view even for one tick).
+    let mut absent: HashSet<String> = HashSet::new();
     for chunk in chunk_ids(&changed, cap) {
         let resp = match fetch_objects(client, chunk).await {
             Ok(r) => r,
@@ -183,6 +187,7 @@ async fn poll_matrices(
             .pointer("/result")
             .and_then(|v| v.as_array())
             .context("multiGetObjects missing result array")?;
+        absent.extend(absent_object_ids(objs));
         let states = parse_strike_matrices(objs)?;
         for s in &states {
             insert_strike_matrix_state(pool, s)
@@ -196,7 +201,9 @@ async fn poll_matrices(
         }
     }
 
-    // 4. Mirror the authoritative set (tombstone) + prune the in-memory map.
+    // 4. Mirror the authoritative set (tombstone) + prune the in-memory map. Exclude
+    // matrices the node just confirmed gone, so the listing is the true live membership.
+    listing.retain(|d| !absent.contains(&d.object_id));
     replace_matrix_listing(pool, &listing)
         .await
         .context("replace matrix listing")?;
