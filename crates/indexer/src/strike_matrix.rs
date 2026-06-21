@@ -127,26 +127,33 @@ pub fn parse_strike_matrix(obj_data: &Value) -> Result<StrikeMatrixState> {
 }
 
 /// Parse the `result` array of a `sui_multiGetObjects{showContent}` response.
-/// Each element is `{ data: { ... } }` OR `{ error: { ... } }`. A per-element
-/// `error` (notExists/deleted) is a BENIGN read race — a matrix can settle/delist
-/// between the getDynamicFields listing and this fetch — so the element is SKIPPED
-/// (it drops from the next listing; its version map entry stays stale → re-tried).
-/// A present-but-unparseable `data` is still a loud Err (real layout drift → fatal).
+/// Each element is `{ data: { ... } }` OR `{ error: { code, ... } }`. Only an
+/// OBJECT-ABSENCE error (`notExists`/`deleted`) is a BENIGN read race — a matrix can
+/// settle/delist between the getDynamicFields listing and this fetch — and is SKIPPED
+/// (it drops from the next listing; its version-map entry stays stale → re-tried). Any
+/// OTHER per-element error (permission, node-internal, unknown) → loud Err (we must not
+/// silently drop a matrix on a real RPC failure). A present-but-unparseable `data` is
+/// likewise a loud Err (real layout drift → fatal).
 pub fn parse_strike_matrices(objects: &[Value]) -> Result<Vec<StrikeMatrixState>> {
     objects
         .iter()
         .filter_map(|o| match o.get("data") {
             Some(data) => Some(parse_strike_matrix(data)),
-            None => {
-                // No data → either a benign per-element error (skip) or a malformed
-                // element with neither data nor error (fatal — unexpected shape).
-                match o.get("error") {
-                    Some(_) => None,
-                    None => Some(Err(anyhow::anyhow!(
-                        "multiGetObjects element has neither data nor error: {o}"
-                    ))),
+            None => match o.get("error") {
+                Some(err) => {
+                    let code = err.get("code").and_then(Value::as_str).unwrap_or("");
+                    if code == "notExists" || code == "deleted" {
+                        None // benign object-absence race → skip
+                    } else {
+                        Some(Err(anyhow::anyhow!(
+                            "multiGetObjects element error (not a benign absence): {err}"
+                        )))
+                    }
                 }
-            }
+                None => Some(Err(anyhow::anyhow!(
+                    "multiGetObjects element has neither data nor error: {o}"
+                ))),
+            },
         })
         .collect()
 }
@@ -416,6 +423,14 @@ mod tests {
         ];
         let states = parse_strike_matrices(&objs).unwrap();
         assert_eq!(states.len(), 1, "the notExists element is skipped, the valid one parsed");
+    }
+
+    #[test]
+    fn parse_matrices_fatal_on_non_absence_error() {
+        // WHY: only notExists/deleted are benign races. A permission/internal error
+        // must NOT be silently swallowed (Rule 12) — it would drop a matrix unnoticed.
+        let objs = vec![serde_json::json!({ "error": { "code": "displayError", "error": "boom" } })];
+        assert!(parse_strike_matrices(&objs).is_err());
     }
 
     #[test]
