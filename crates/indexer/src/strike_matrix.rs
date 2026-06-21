@@ -52,6 +52,9 @@ fn u64_field(obj: &Value, key: &str) -> Result<u64> {
 /// Verifies the sum invariant `root.total_q_* == Σ leaf.total_q_*` (sum-semantics
 /// fields only — `best_prefix_*` are prefix-extremes and are intentionally ignored).
 pub fn extract_leaves(page_tree: &Value, leaf_count: usize) -> Result<Vec<PageLeaf>> {
+    if leaf_count == 0 {
+        bail!("page_tree_leaf_count is 0 — a StrikeMatrix always has ≥1 leaf; layout drift");
+    }
     let nodes = page_tree.as_array().context("page_tree is not an array")?;
     let expected = 2 * leaf_count - 1;
     if nodes.len() != expected {
@@ -124,17 +127,26 @@ pub fn parse_strike_matrix(obj_data: &Value) -> Result<StrikeMatrixState> {
 }
 
 /// Parse the `result` array of a `sui_multiGetObjects{showContent}` response.
-/// Each element is `{ data: { ... } }`; a per-element `error` (deleted/notExists)
-/// is a loud Err (we only ever fetch ids we just listed → a missing one is drift).
+/// Each element is `{ data: { ... } }` OR `{ error: { ... } }`. A per-element
+/// `error` (notExists/deleted) is a BENIGN read race — a matrix can settle/delist
+/// between the getDynamicFields listing and this fetch — so the element is SKIPPED
+/// (it drops from the next listing; its version map entry stays stale → re-tried).
+/// A present-but-unparseable `data` is still a loud Err (real layout drift → fatal).
 pub fn parse_strike_matrices(objects: &[Value]) -> Result<Vec<StrikeMatrixState>> {
     objects
         .iter()
-        .map(|o| {
-            let data = o.get("data").with_context(|| match o.get("error") {
-                Some(e) => format!("multiGetObjects element error: {e}"),
-                None => "multiGetObjects element missing data".to_string(),
-            })?;
-            parse_strike_matrix(data)
+        .filter_map(|o| match o.get("data") {
+            Some(data) => Some(parse_strike_matrix(data)),
+            None => {
+                // No data → either a benign per-element error (skip) or a malformed
+                // element with neither data nor error (fatal — unexpected shape).
+                match o.get("error") {
+                    Some(_) => None,
+                    None => Some(Err(anyhow::anyhow!(
+                        "multiGetObjects element has neither data nor error: {o}"
+                    ))),
+                }
+            }
         })
         .collect()
 }
@@ -305,6 +317,13 @@ mod tests {
         assert!(extract_leaves(&pt, 4).is_err());
     }
 
+    #[test]
+    fn extract_leaves_rejects_zero_leaf_count() {
+        // WHY: leaf_count==0 would underflow `2*N-1`/`N-1` (usize) → panic. A panic is
+        // not a graceful loud error; reject it as drift instead (Rule 12).
+        assert!(extract_leaves(&serde_json::json!([]), 0).is_err());
+    }
+
     // Real multiGetObjects element shape (result[i]), trimmed page_tree to N=2.
     fn matrix_obj() -> Value {
         let node = |up: u64, dn: u64| {
@@ -384,6 +403,28 @@ mod tests {
         let mut v = matrix_obj();
         v["content"]["fields"]["value"]["fields"]["mtm"] = serde_json::json!(615919646u64);
         assert!(parse_strike_matrix(&v).is_err());
+    }
+
+    #[test]
+    fn parse_matrices_skips_not_exists_element() {
+        // WHY: a matrix can settle/delist between getDynamicFields and multiGetObjects.
+        // That per-element `error` is a benign read race, NOT layout drift — skip it,
+        // don't crash the poller (the missing matrix drops from the next listing).
+        let objs = vec![
+            serde_json::json!({ "error": { "code": "notExists", "object_id": "0xgone" } }),
+            serde_json::json!({ "data": matrix_obj() }),
+        ];
+        let states = parse_strike_matrices(&objs).unwrap();
+        assert_eq!(states.len(), 1, "the notExists element is skipped, the valid one parsed");
+    }
+
+    #[test]
+    fn parse_matrices_fatal_on_present_but_malformed_data() {
+        // WHY: a present `data` that won't parse is real drift → must stay fatal.
+        let mut bad = matrix_obj();
+        bad["content"]["fields"]["value"]["fields"].as_object_mut().unwrap().remove("mtm");
+        let objs = vec![serde_json::json!({ "data": bad })];
+        assert!(parse_strike_matrices(&objs).is_err());
     }
 
     fn getdf_page(has_next: bool) -> Value {
