@@ -25,7 +25,7 @@ export function VaultHealth({ vault, now }: { vault: NonNullable<Vault>; now: nu
           {vault.wl_enabled ? (vault.withdrawal_available == null ? "—" : fmt(vault.withdrawal_available)) : "Unlimited"}
         </div>
         <div className="mt-3">
-          {vault.wl_enabled ? <DepthBar pct={0.5} /> : <div className="h-1.5 w-full bg-sonar" />}
+          {vault.wl_enabled ? null : <div className="h-1.5 w-full bg-sonar" />}
         </div>
       </div>
     </section>
