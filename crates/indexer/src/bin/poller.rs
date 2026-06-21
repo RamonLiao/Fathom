@@ -146,6 +146,18 @@ async fn poll_matrices(
         }
     }
 
+    // A wrong/stale table id does NOT return an RPC error — getDynamicFields just
+    // yields an empty set. The id is derived from the freshly-parsed Predict object
+    // each tick (a renamed field would already be fatal in parse_oracle_matrices_table_id),
+    // so an empty listing on a live protocol is an anomaly worth surfacing — WARN,
+    // not fatal (a legitimately-empty table must not crash the poller).
+    if listing.is_empty() {
+        tracing::warn!(
+            table = %table_id,
+            "oracle_matrices listing empty — config drift or stale table id?"
+        );
+    }
+
     // 2. Dedup: fetch only matrices whose listing version advanced.
     let changed: Vec<String> = listing
         .iter()
