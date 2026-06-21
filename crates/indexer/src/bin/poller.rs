@@ -124,6 +124,9 @@ async fn poll_matrices(
     // 1. List the full authoritative set (paginate while hasNextPage).
     let mut listing: Vec<DynField> = Vec::new();
     let mut cursor: Option<String> = None;
+    // Guard against a misbehaving fullnode returning a cyclic cursor — an unbounded
+    // loop would silently hang the poller (worse than a crash); bail loud instead.
+    let mut seen_cursors: HashSet<String> = HashSet::new();
     loop {
         let resp = match fetch_dynamic_fields(client, &table_id, cursor.as_deref()).await {
             Ok(r) => r,
@@ -143,7 +146,12 @@ async fn poll_matrices(
         let (mut items, next) = parse_dynamic_fields_page(result)?;
         listing.append(&mut items);
         match next {
-            Some(c) => cursor = Some(c),
+            Some(c) => {
+                if !seen_cursors.insert(c.clone()) {
+                    anyhow::bail!("getDynamicFields returned a repeated cursor ({c}) — cyclic pagination");
+                }
+                cursor = Some(c);
+            }
             None => break,
         }
     }
