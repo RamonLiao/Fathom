@@ -44,5 +44,5 @@ async fn vault_decodes_and_nulls_unlimited_withdrawal(pool: PgPool) {
     assert_eq!(json["nav"].as_f64().unwrap(), 3.0);              // (2_000_000+1_000_000)/1e6
     assert_eq!(json["balance"].as_f64().unwrap(), 2.0);
     assert!(json["withdrawal_available"].is_null());            // unlimited
-    assert_eq!(json["wl_enabled"].as_bool().unwrap(), false);
+    assert!(!json["wl_enabled"].as_bool().unwrap());
 }
