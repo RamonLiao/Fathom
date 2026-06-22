@@ -73,14 +73,35 @@ Sui Testnet ─► Custom Indexer ─► Postgres ─► Fathom Engine ─► AP
 
 ## 🚀 Getting Started
 
-1. **Clone the repository:**
+### Run the dashboard
+
+The dashboard is read-only over three Postgres views. Two writers populate them
+from testnet, and the API serves the built SPA — no `sui-sdk` in the API.
+
+1. **Postgres + migrations:**
    ```bash
-   git clone <repo-url>
-   cd 02-sui-transparency-hub
+   docker run -d --name plp-hub-pg -e POSTGRES_PASSWORD=hub -e POSTGRES_USER=hub \
+     -e POSTGRES_DB=hub -p 5435:5432 postgres:16-alpine
+   export DATABASE_URL="postgres://hub:hub@127.0.0.1:5435/hub"
+   for f in crates/indexer/migrations/000*.sql; do psql "$DATABASE_URL" -f "$f"; done
    ```
 
-2. **Install dependencies & launch dev server:**
+2. **Writers (each its own process/lifecycle):**
    ```bash
-   npm install
-   npm run dev
+   # A-path: oracle price/SVI event stream → prices_update / svi_update  (→ /api/oracles)
+   RUST_LOG=info cargo run -p indexer --bin indexer
+   # B-path: Predict object poller → predict_state / strike_matrix_state  (→ /api/vault, /api/inventory)
+   RUST_LOG=info cargo run -p indexer --bin poller
    ```
+
+3. **Build SPA + serve from the API:**
+   ```bash
+   (cd web && npm install && npm run build)
+   WEB_DIST=web/dist CORS_DEV=1 RUST_LOG=info cargo run -p api
+   ```
+   Open <http://localhost:8080>. NAV/utilisation/withdrawal, ~19 oracle rows
+   (PRICES-ONLY where SVI is absent, dirty rows pulse), and per-oracle inventory
+   heatmaps refresh every 10s. Frontend dev server alternative: `cd web && npm run dev`.
+
+> Scales decode only in the views (`/1e9` strikes/SVI, `/1e6` DUSDC); raw chain
+> integers are the source of truth, so a scale fix is a view change — no re-index.
