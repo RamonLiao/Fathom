@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS oracle_matrix_listing (
 );
 
 -- Latest state per CURRENTLY-LISTED matrix. INNER JOIN drops delisted oracles.
--- Scales: strikes/tick_size /1e9; mtm /1e6 (ASSUMED -- calibrate in live smoke).
+-- Scales: strikes/tick_size /1e9; mtm /1e6 (live-verified 2026-06-22: per-matrix
+-- mtm 180-568 DUSDC, strikes decode to 50000-150000 BTC USD — both consistent).
 -- range_qty and leaf quantities left raw (scale unverified). page->strike mapping
 -- is left to the frontend from the raw scalars; the data horizon is MIN(ingested_at).
 CREATE OR REPLACE VIEW strike_matrix_latest AS

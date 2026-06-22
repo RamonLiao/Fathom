@@ -20,10 +20,11 @@ CREATE TABLE IF NOT EXISTS predict_state (
 CREATE OR REPLACE VIEW predict_latest AS
 SELECT
   object_version,
-  -- NAV: mirrors on-chain vault::vault_value (body NOT decompiled). balance +
-  -- total_mtm is our best guess; total_mtm is U64 unsigned so the sign convention
-  -- is unverified. If decompile later shows `balance - total_mtm`, fix THIS LINE
-  -- only (raw columns are the source of truth → no re-index needed).
+  -- NAV: mirrors on-chain vault::vault_value (body NOT decompiled). Live smoke
+  -- (2026-06-22, testnet) confirms `balance + total_mtm` correct in scale AND sign:
+  -- NAV 1,021,003 = balance 1,019,194 + total_mtm 1,804 — all consistent DUSDC
+  -- magnitudes for the ~1M vault. If decompile later contradicts this, fix THIS
+  -- LINE only (raw columns are the source of truth → no re-index needed).
   (vault_balance + vault_total_mtm)::float8 / 1e6                  AS nav,
   -- utilization: OUR definition (max_payout / balance), NOT the protocol's
   -- internal spread-utilization.
